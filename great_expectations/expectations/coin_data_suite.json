@@ -1,0 +1,44 @@
+{
+  "expectation_suite_name": "coin_data_suite",
+  "expectations": [
+    {
+      "expectation_type": "expect_column_to_exist",
+      "kwargs": { "column": "coin_id" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "coin_id" }
+    },
+    {
+      "expectation_type": "expect_column_to_exist",
+      "kwargs": { "column": "price_usd" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_of_type",
+      "kwargs": { "column": "price_usd", "type_": "float" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_greater_than",
+      "kwargs": { "column": "price_usd", "value": 0 }
+    },
+    {
+      "expectation_type": "expect_column_to_exist",
+      "kwargs": { "column": "market_cap" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_greater_than",
+      "kwargs": { "column": "market_cap", "value": 0 }
+    },
+    {
+      "expectation_type": "expect_column_to_exist",
+      "kwargs": { "column": "timestamp" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "timestamp" }
+    }
+  ],
+  "meta": {
+    "great_expectations_version": "0.18.12"
+  }
+}

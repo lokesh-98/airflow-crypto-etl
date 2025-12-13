@@ -1,0 +1,44 @@
+# Great Expectations v1+ config
+data_context_version: 3.0
+
+plugins_directory: plugins/
+config_variables_file_path: uncommitted/config_variables.yml
+expectations_store_name: expectations_store
+validation_results_store_name: validation_results_store
+checkpoint_store_name: checkpoint_store
+
+stores:
+  expectations_store:
+    class_name: ExpectationsStore
+    store_backend:
+      class_name: FilesystemStoreBackend
+      base_directory: expectations/
+  validation_results_store:
+    class_name: ValidationResultsStore
+    store_backend:
+      class_name: FilesystemStoreBackend
+      base_directory: uncommitted/validations/
+  checkpoint_store:
+    class_name: CheckpointStore
+    store_backend:
+      class_name: FilesystemStoreBackend
+      base_directory: checkpoints/
+
+datasources:
+  my_filesystem_datasource:
+    class_name: Datasource
+    execution_engine:
+      class_name: PandasExecutionEngine
+    data_connectors:
+      default_runtime_data_connector:
+        class_name: RuntimeDataConnector
+        batch_identifiers: ["runtime_batch_id"]
+      filesystem_csv:
+        class_name: InferredAssetFilesystemDataConnector
+        base_directory: /opt/airflow/datasets
+        default_regex:
+          group_names: ["data_asset_name"]
+          pattern: "(.*)\.csv"
+
+anonymous_usage_statistics:
+  enabled: false

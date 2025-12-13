@@ -1,0 +1,7 @@
+pandas
+pyarrow
+minio
+sqlalchemy
+requests
+psycopg2-binary
+great_expectations==0.17.23   # or whichever version you designed the code for
