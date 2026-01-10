@@ -565,10 +565,47 @@ load_fact_task = PythonOperator(
     dag=dag,
 )
 
+
+# -----------------------------
+# 6 load_gold_metrics
+# -----------------------------
+
+
+
+def load_gold_metrics():
+    conn = get_pg_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO coin_daily_metrics
+        SELECT
+            coin_id,
+            DATE(timestamp) AS date,
+            AVG(price_usd),
+            MIN(price_usd),
+            MAX(price_usd),
+            AVG(market_cap)
+        FROM coin_prices_fact
+        GROUP BY coin_id, DATE(timestamp)
+        ON CONFLICT (coin_id, date) DO NOTHING;
+    """)
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    
+load_gold_task = PythonOperator(
+    task_id="load_gold_metrics",
+    python_callable=load_gold_metrics,
+    dag=dag,
+)
+    
+
 # -----------------------------
 # DAG Dependencies
 # -----------------------------
 
-create_tables_task >> extract_task >> upload_raw_to_s3_task >> transform_bronze_to_silver_task  >> validate_task >> load_dim_task >> load_fact_task
+create_tables_task >> extract_task >> upload_raw_to_s3_task >> transform_bronze_to_silver_task  >> validate_task >> load_dim_task >> load_fact_task  >> load_gold_task
+
 
 # extract_task >> transform_task >> validate_task >> create_tables_task >> load_dim_task >> load_fact_task
