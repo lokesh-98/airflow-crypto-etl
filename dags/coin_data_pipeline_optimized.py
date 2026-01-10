@@ -261,48 +261,48 @@ upload_raw_to_s3_task = PythonOperator(
 
 #     logging.info("Saved coin_transformed.csv")
 
-def transform_data():
-    import logging
+# def transform_data():
+#     import logging
 
-    s3_hook = S3Hook(aws_conn_id="minio_s3")
+#     s3_hook = S3Hook(aws_conn_id="minio_s3")
 
-    # Read RAW CSV from MinIO
-    raw_obj = s3_hook.read_key(
-        key="raw/coin_raw.csv",
-        bucket_name="crypto-data"
-    )
+#     # Read RAW CSV from MinIO
+#     raw_obj = s3_hook.read_key(
+#         key="raw/coin_raw.csv",
+#         bucket_name="crypto-data"
+#     )
 
-    df = pd.read_csv(io.StringIO(raw_obj))
+#     df = pd.read_csv(io.StringIO(raw_obj))
 
-    # Transform
-    df = df[
-        ["id", "symbol", "name", "current_price", "market_cap", "last_updated"]
-    ]
+#     # Transform
+#     df = df[
+#         ["id", "symbol", "name", "current_price", "market_cap", "last_updated"]
+#     ]
 
-    df = df.rename(columns={
-        "id": "coin_id",
-        "current_price": "price_usd",
-        "last_updated": "timestamp",
-    })
+#     df = df.rename(columns={
+#         "id": "coin_id",
+#         "current_price": "price_usd",
+#         "last_updated": "timestamp",
+#     })
 
-    # Write transformed CSV back to MinIO
-    csv_buffer = io.StringIO()
-    df.to_csv(csv_buffer, index=False)
+#     # Write transformed CSV back to MinIO
+#     csv_buffer = io.StringIO()
+#     df.to_csv(csv_buffer, index=False)
 
-    s3_hook.load_string(
-        string_data=csv_buffer.getvalue(),
-        key="processed/coin_transformed.csv",
-        bucket_name="crypto-data",
-        replace=True,
-    )
+#     s3_hook.load_string(
+#         string_data=csv_buffer.getvalue(),
+#         key="processed/coin_transformed.csv",
+#         bucket_name="crypto-data",
+#         replace=True,
+#     )
 
-    logging.info("Uploaded transformed data to MinIO: s3://crypto-data/processed/coin_transformed.csv")
+#     logging.info("Uploaded transformed data to MinIO: s3://crypto-data/processed/coin_transformed.csv")
 
-transform_task = PythonOperator(
-    task_id="transform_data",
-    python_callable=transform_data,
-    dag=dag,
-)
+# transform_task = PythonOperator(
+#     task_id="transform_data",
+#     python_callable=transform_data,
+#     dag=dag,
+# )
 
 
 def transform_bronze_to_silver():
