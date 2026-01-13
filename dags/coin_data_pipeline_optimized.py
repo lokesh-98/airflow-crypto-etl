@@ -20,6 +20,7 @@ from datetime import datetime
 
 # minio - connection  
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+from io import BytesIO
 import json
 from datetime import datetime
 import io
@@ -567,45 +568,99 @@ load_fact_task = PythonOperator(
 
 
 # -----------------------------
-# 6 load_gold_metrics
+# 6 load_gold_metrics ( PGSQL - TABLE STORE )
 # -----------------------------
 
 
 
-def load_gold_metrics():
-    conn = get_pg_conn()
-    cur = conn.cursor()
+# def load_gold_metrics():
+#     conn = get_pg_conn()
+#     cur = conn.cursor()
 
-    cur.execute("""
-        INSERT INTO coin_daily_metrics
-        SELECT
-            coin_id,
-            DATE(timestamp) AS date,
-            AVG(price_usd),
-            MIN(price_usd),
-            MAX(price_usd),
-            AVG(market_cap)
-        FROM coin_prices_fact
-        GROUP BY coin_id, DATE(timestamp)
-        ON CONFLICT (coin_id, date) DO NOTHING;
-    """)
+#     cur.execute("""
+#         INSERT INTO coin_daily_metrics
+#         SELECT
+#             coin_id,
+#             DATE(timestamp) AS date,
+#             AVG(price_usd),
+#             MIN(price_usd),
+#             MAX(price_usd),
+#             AVG(market_cap)
+#         FROM coin_prices_fact
+#         GROUP BY coin_id, DATE(timestamp)
+#         ON CONFLICT (coin_id, date) DO NOTHING;
+#     """)
 
-    conn.commit()
-    cur.close()
-    conn.close()
+#     conn.commit()
+#     cur.close()
+#     conn.close()
     
-load_gold_task = PythonOperator(
-    task_id="load_gold_metrics",
-    python_callable=load_gold_metrics,
+# load_gold_task = PythonOperator(
+#     task_id="load_gold_metrics",
+#     python_callable=load_gold_metrics,
+#     dag=dag,
+# )
+
+## =================================
+
+## build_gold_coin_daily_minio
+
+## =================================
+
+def build_gold_coin_daily_minio(**context):
+    logging.info("Building GOLD layer (MinIO)")
+
+    execution_date = context["ds"]  # YYYY-MM-DD
+    silver_key = f"silver/coins/dt={execution_date}/coin_clean.parquet"
+    gold_key = f"gold/coins_daily/dt={execution_date}/coin_daily_metrics.parquet"
+
+    s3 = S3Hook(aws_conn_id="minio_s3")
+
+    # Read Silver parquet
+    silver_obj = s3.get_key(silver_key, bucket_name="crypto-lake")
+    df = pd.read_parquet(BytesIO(silver_obj.get()["Body"].read()))
+
+    # Aggregate
+    gold_df = (
+        df.groupby("coin_id")
+        .agg(
+            avg_price_usd=("price_usd", "mean"),
+            min_price_usd=("price_usd", "min"),
+            max_price_usd=("price_usd", "max"),
+            avg_market_cap=("market_cap", "mean"),
+        )
+        .reset_index()
+    )
+
+    gold_df["dt"] = execution_date
+
+    # Write Parquet back to MinIO
+    buffer = BytesIO()
+    gold_df.to_parquet(buffer, index=False)
+    buffer.seek(0)
+
+    s3.load_file_obj(
+        buffer,
+        key=gold_key,
+        bucket_name="crypto-lake",
+        replace=True,
+    )
+
+    logging.info("Gold layer written to MinIO successfully")
+
+build_gold_minio_task = PythonOperator(
+    task_id="build_gold_minio",
+    python_callable=build_gold_coin_daily_minio,
+    provide_context=True,
     dag=dag,
 )
-    
+   
 
 # -----------------------------
 # DAG Dependencies
 # -----------------------------
 
-create_tables_task >> extract_task >> upload_raw_to_s3_task >> transform_bronze_to_silver_task  >> validate_task >> load_dim_task >> load_fact_task  >> load_gold_task
+create_tables_task >> extract_task >> upload_raw_to_s3_task >> transform_bronze_to_silver_task  >> validate_task >> load_dim_task >> load_fact_task >> build_gold_minio_task # >> load_gold_task
 
 
 # extract_task >> transform_task >> validate_task >> create_tables_task >> load_dim_task >> load_fact_task
