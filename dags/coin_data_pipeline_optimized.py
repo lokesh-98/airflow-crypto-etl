@@ -714,17 +714,62 @@ load_gold_postgres_task = PythonOperator(
     python_callable=load_gold_to_postgres,
     provide_context=True,
     dag=dag,
-)
-    
+) ## =================================
 
+## validate_gold_metrics
+
+## =================================
+    
+def validate_gold_metrics():
+    logging.info("Validating GOLD metrics")
+
+    conn = get_pg_conn()
+    cur = conn.cursor()
+
+    checks = {
+        "row_count": """
+            SELECT COUNT(*) FROM gold_coin_daily_metrics
+            WHERE dt = CURRENT_DATE
+        """,
+        "no_null_prices": """
+            SELECT COUNT(*) FROM gold_coin_daily_metrics
+            WHERE avg_price_usd IS NULL
+        """,
+        "price_positive": """
+            SELECT COUNT(*) FROM gold_coin_daily_metrics
+            WHERE avg_price_usd <= 0
+        """,
+    }
+
+    for name, sql in checks.items():
+        cur.execute(sql)
+        result = cur.fetchone()[0]
+
+        if name == "row_count" and result == 0:
+            raise ValueError("❌ No GOLD data for today")
+
+        if name != "row_count" and result > 0:
+            raise ValueError(f"❌ GOLD quality check failed: {name}")
+
+    cur.close()
+    conn.close()
+
+    logging.info("✅ Gold data quality checks passed")
+
+validate_gold_task = PythonOperator(
+    task_id="validate_gold_metrics",
+    python_callable=validate_gold_metrics,
+    dag=dag,
+)
    
 
 # -----------------------------
 # DAG Dependencies
 # -----------------------------
 
-create_tables_task >> extract_task >> upload_raw_to_s3_task >> transform_bronze_to_silver_task  >> validate_task >> load_dim_task >> load_fact_task >> build_gold_minio_task >> load_gold_postgres_task
+create_tables_task >> extract_task >> upload_raw_to_s3_task >> transform_bronze_to_silver_task  >> validate_task >> load_dim_task >> load_fact_task >> build_gold_minio_task >> load_gold_postgres_task >> validate_gold_task
 # >> load_gold_task
 
 
 # extract_task >> transform_task >> validate_task >> create_tables_task >> load_dim_task >> load_fact_task
+
