@@ -306,12 +306,14 @@ upload_raw_to_s3_task = PythonOperator(
 # )
 
 
-def transform_bronze_to_silver():
+# def transform_bronze_to_silver():
+def transform_bronze_to_silver(**context):
+    execution_date = context["ds"]
     logging.info("Starting Bronze ➜ Silver transformation")
 
     s3 = S3Hook(aws_conn_id="minio_s3")
 
-    execution_date = datetime.utcnow().date().isoformat()
+    # execution_date = datetime.utcnow().date().isoformat()
 
     bronze_key = f"bronze/coins/dt={execution_date}/coin_raw.json"
     silver_key = f"silver/coins/dt={execution_date}/coin_clean.parquet"
@@ -365,6 +367,7 @@ def transform_bronze_to_silver():
 transform_bronze_to_silver_task = PythonOperator(
     task_id="transform_bronze_to_silver",
     python_callable=transform_bronze_to_silver,
+    provide_context=True,
     dag=dag,
 )
 
