@@ -307,35 +307,90 @@ upload_raw_to_s3_task = PythonOperator(
 
 
 # def transform_bronze_to_silver():
+# def transform_bronze_to_silver(**context):
+#     execution_date = context["ds"]
+#     logging.info("Starting Bronze ➜ Silver transformation")
+
+#     s3 = S3Hook(aws_conn_id="minio_s3")
+
+#     # execution_date = datetime.utcnow().date().isoformat()
+
+#     bronze_key = f"bronze/coins/dt={execution_date}/coin_raw.json"
+#     silver_key = f"silver/coins/dt={execution_date}/coin_clean.parquet"
+#     bucket = "crypto-lake"
+
+#     # 1️⃣ Read raw JSON from Bronze
+#     raw_json = s3.read_key(key=bronze_key, bucket_name=bucket)
+#     df = pd.read_json(io.StringIO(raw_json))
+
+#     # 2️⃣ Clean & select columns
+#     df = df[
+#         [
+#             "id",
+#             "symbol",
+#             "name",
+#             "current_price",
+#             "market_cap",
+#             "last_updated",
+#         ]
+#     ]
+
+#     df = df.rename(
+#         columns={
+#             "id": "coin_id",
+#             "current_price": "price_usd",
+#             "last_updated": "timestamp",
+#         }
+#     )
+
+#     # 3️⃣ Type casting
+#     df["timestamp"] = pd.to_datetime(df["timestamp"])
+#     df["price_usd"] = df["price_usd"].astype(float)
+#     df["market_cap"] = df["market_cap"].astype(float)
+
+#     # 4️⃣ Convert to Parquet (in-memory)
+#     table = pa.Table.from_pandas(df)
+#     buffer = io.BytesIO()
+#     pq.write_table(table, buffer)
+#     buffer.seek(0)
+
+#     # 5️⃣ Write to Silver
+#     s3.load_bytes(
+#         bytes_data=buffer.getvalue(),
+#         key=silver_key,
+#         bucket_name=bucket,
+#         replace=True,
+#     )
+
+#     logging.info(f"Silver data written to {silver_key}")
+
 def transform_bronze_to_silver(**context):
-    execution_date = context["ds"]
-    logging.info("Starting Bronze ➜ Silver transformation")
+    import logging
+    import io
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+
+    logging.info("Starting Bronze ➜ Silver transformation (atomic)")
 
     s3 = S3Hook(aws_conn_id="minio_s3")
 
-    # execution_date = datetime.utcnow().date().isoformat()
-
-    bronze_key = f"bronze/coins/dt={execution_date}/coin_raw.json"
-    silver_key = f"silver/coins/dt={execution_date}/coin_clean.parquet"
+    execution_date = context["ds"]
     bucket = "crypto-lake"
 
-    # 1️⃣ Read raw JSON from Bronze
+    bronze_key = f"bronze/coins/dt={execution_date}/coin_raw.json"
+    tmp_silver_key = f"silver/coins/_tmp_dt={execution_date}/coin_clean.parquet"
+    final_silver_key = f"silver/coins/dt={execution_date}/coin_clean.parquet"
+
+    # 1️⃣ Read Bronze
     raw_json = s3.read_key(key=bronze_key, bucket_name=bucket)
     df = pd.read_json(io.StringIO(raw_json))
 
-    # 2️⃣ Clean & select columns
+    # 2️⃣ Transform
     df = df[
-        [
-            "id",
-            "symbol",
-            "name",
-            "current_price",
-            "market_cap",
-            "last_updated",
-        ]
-    ]
-
-    df = df.rename(
+        ["id", "symbol", "name", "current_price", "market_cap", "last_updated"]
+    ].rename(
         columns={
             "id": "coin_id",
             "current_price": "price_usd",
@@ -343,26 +398,40 @@ def transform_bronze_to_silver(**context):
         }
     )
 
-    # 3️⃣ Type casting
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df["price_usd"] = df["price_usd"].astype(float)
     df["market_cap"] = df["market_cap"].astype(float)
 
-    # 4️⃣ Convert to Parquet (in-memory)
+    # 3️⃣ Write Parquet to TEMP location
     table = pa.Table.from_pandas(df)
     buffer = io.BytesIO()
     pq.write_table(table, buffer)
     buffer.seek(0)
 
-    # 5️⃣ Write to Silver
     s3.load_bytes(
         bytes_data=buffer.getvalue(),
-        key=silver_key,
+        key=tmp_silver_key,
         bucket_name=bucket,
         replace=True,
     )
 
-    logging.info(f"Silver data written to {silver_key}")
+    logging.info(f"Temporary Silver written: {tmp_silver_key}")
+
+    # 4️⃣ Promote TEMP ➜ FINAL (atomic visibility)
+    if s3.check_for_key(final_silver_key, bucket):
+        s3.delete_objects(bucket=bucket, keys=[final_silver_key])
+
+    s3.copy_object(
+        source_bucket_key=f"{bucket}/{tmp_silver_key}",
+        dest_bucket_key=final_silver_key,
+        source_bucket_name=bucket,
+        dest_bucket_name=bucket,
+    )
+
+    s3.delete_objects(bucket=bucket, keys=[tmp_silver_key])
+
+    logging.info(f"Silver partition committed: {final_silver_key}")
+
 
 transform_bronze_to_silver_task = PythonOperator(
     task_id="transform_bronze_to_silver",
