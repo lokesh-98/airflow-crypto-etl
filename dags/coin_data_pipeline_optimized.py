@@ -422,7 +422,7 @@ def transform_bronze_to_silver(**context):
         s3.delete_objects(bucket=bucket, keys=[final_silver_key])
 
     s3.copy_object(
-        source_bucket_key=f"{bucket}/{tmp_silver_key}",
+        source_bucket_key=tmp_silver_key,
         dest_bucket_key=final_silver_key,
         source_bucket_name=bucket,
         dest_bucket_name=bucket,
