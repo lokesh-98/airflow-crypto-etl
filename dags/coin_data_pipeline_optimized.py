@@ -454,6 +454,28 @@ def transform_bronze_to_silver(**context):
     s3.delete_objects(bucket=bucket, keys=[tmp_silver_key])
 
     logging.info(f"Silver partition committed: {final_silver_key}")
+    
+    # 5️⃣ Write Silver metadata (schema versioning)
+    metadata = {
+        "dataset": "coins",
+        "schema_version": SILVER_SCHEMA_VERSION,
+        "execution_date": execution_date,
+        "row_count": len(df),
+        "source_bronze_path": bronze_key,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    metadata_key = f"silver/coins/dt={execution_date}/_metadata.json"
+
+    s3.load_string(
+        string_data=json.dumps(metadata, indent=2),
+        key=metadata_key,
+        bucket_name=bucket,
+        replace=True,
+    )
+
+    logging.info(f"Silver metadata written: {metadata_key}")
+
 
 
 transform_bronze_to_silver_task = PythonOperator(
