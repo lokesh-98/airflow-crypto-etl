@@ -25,6 +25,16 @@ import json
 from datetime import datetime
 import io
 
+import pyarrow as pa
+
+SILVER_SCHEMA_V1 = pa.schema([
+    pa.field("coin_id", pa.string(), nullable=False),
+    pa.field("symbol", pa.string(), nullable=False),
+    pa.field("name", pa.string(), nullable=False),
+    pa.field("price_usd", pa.float64(), nullable=False),
+    pa.field("market_cap", pa.float64(), nullable=False),
+    pa.field("timestamp", pa.timestamp("ms"), nullable=False),
+])
 
 
 
@@ -402,8 +412,21 @@ def transform_bronze_to_silver(**context):
     df["price_usd"] = df["price_usd"].astype(float)
     df["market_cap"] = df["market_cap"].astype(float)
 
-    # 3️⃣ Write Parquet to TEMP location
-    table = pa.Table.from_pandas(df)
+    # # 3️⃣ Write Parquet to TEMP location
+    # table = pa.Table.from_pandas(df)
+    
+    # 3️⃣ Enforce Silver schema (HARD CONTRACT)
+    try:
+        table = pa.Table.from_pandas(
+            df,
+            schema=SILVER_SCHEMA_V1,
+            preserve_index=False,
+            safe=True
+        )
+    except Exception as e:
+        logging.error("❌ Silver schema validation failed")
+        logging.error(str(e))
+        raise
     buffer = io.BytesIO()
     pq.write_table(table, buffer)
     buffer.seek(0)
