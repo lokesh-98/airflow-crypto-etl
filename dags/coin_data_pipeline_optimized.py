@@ -2,7 +2,7 @@ import io
 from io import BytesIO
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import pandas as pd
 import pyarrow as pa
@@ -35,15 +35,25 @@ SILVER_SCHEMA_V1 = pa.schema([
 DATA_DIR = "/opt/airflow/datasets"
 GE_CONTEXT_DIR = "/opt/airflow/gx"
 
+# default_args = {
+#     "owner": "lokesh",
+#     "start_date": days_ago(1),
+#     "retries": 0,
+# }
+
 default_args = {
-    "owner": "lokesh",
-    "start_date": days_ago(1),
-    "retries": 0,
+    "owner": "data-platform",
+    "depends_on_past": False,
+    "retries": 2,
+    "retry_delay": timedelta(minutes=5),
+    "email_on_failure": False,
+    "email_on_retry": False,
 }
 
 dag = DAG(
     dag_id="coin_data_pipeline_optimized",
     default_args=default_args,
+    start_date=days_ago(1),
     schedule_interval="@daily",
     catchup=False,
     description="Crypto ETL with Great Expectations validation",
