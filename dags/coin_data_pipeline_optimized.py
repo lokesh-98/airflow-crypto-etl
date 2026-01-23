@@ -1118,13 +1118,79 @@ validate_gold_sanity_task = PythonOperator(
     provide_context=True,
     dag=dag,
 )
+
+def validate_gold_freshness(**context):
+    import logging
+    from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+
+    logging.info("Validating GOLD data freshness")
+
+    execution_date = context["ds"]
+    bucket = "crypto-lake"
+
+    gold_key = f"gold/coins_daily/dt={execution_date}/coin_daily_metrics.parquet"
+
+    s3 = S3Hook(aws_conn_id="minio_s3")
+
+    if not s3.check_for_key(gold_key, bucket_name=bucket):
+        raise ValueError(
+            f"❌ Gold freshness check failed: "
+            f"missing Gold partition for {execution_date}"
+        )
+
+    logging.info("✅ Gold freshness check passed")
+
+validate_gold_freshness_task = PythonOperator(
+    task_id="validate_gold_freshness",
+    python_callable=validate_gold_freshness,
+    provide_context=True,
+    dag=dag,
+)
+
+def validate_gold_sla(**context):
+    import logging
+    from datetime import datetime, time, timezone
+
+    logging.info("Validating GOLD SLA (lateness check)")
+
+    execution_date_str = context["ds"]  # YYYY-MM-DD
+    execution_date = datetime.fromisoformat(execution_date_str).date()
+
+    # SLA definition: Gold must be ready by 09:00 UTC
+    sla_deadline = datetime.combine(
+        execution_date,
+        time(hour=9, minute=0),
+        tzinfo=timezone.utc,
+    )
+
+    now_utc = datetime.now(timezone.utc)
+
+    logging.info(f"SLA deadline: {sla_deadline.isoformat()}")
+    logging.info(f"Current time: {now_utc.isoformat()}")
+
+    if now_utc > sla_deadline:
+        raise ValueError(
+            f"❌ GOLD SLA missed: "
+            f"completed at {now_utc.isoformat()}, "
+            f"expected by {sla_deadline.isoformat()}"
+        )
+
+    logging.info("✅ GOLD SLA met")
+
+validate_gold_sla_task = PythonOperator(
+    task_id="validate_gold_sla",
+    python_callable=validate_gold_sla,
+    provide_context=True,
+    dag=dag,
+)
+
    
 
 # -----------------------------
 # DAG Dependencies
 # -----------------------------
 
-create_tables_task >> extract_task >> upload_raw_to_s3_task >> transform_bronze_to_silver_task  >> validate_task >> load_dim_task >> load_fact_task >> build_gold_minio_task >> load_gold_postgres_task >> validate_gold_row_count_task >> validate_gold_sanity_task >> validate_gold_task
+create_tables_task >> extract_task >> upload_raw_to_s3_task >> transform_bronze_to_silver_task  >> validate_task >> load_dim_task >> load_fact_task >> build_gold_minio_task >> load_gold_postgres_task >> validate_gold_row_count_task >> validate_gold_sanity_task >> validate_gold_freshness_task >> validate_gold_sla_task >> validate_gold_task 
 # >> load_gold_task
 
 
