@@ -1042,13 +1042,89 @@ validate_gold_row_count_task = PythonOperator(
     dag=dag,
 )
     
+def validate_gold_sanity(**context):
+    import logging
+
+    logging.info("Running GOLD sanity checks")
+
+    execution_date = context["ds"]
+
+    conn = get_pg_conn()
+    cur = conn.cursor()
+
+    # 1️⃣ Non-empty check
+    cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM gold_coin_daily_metrics
+        WHERE dt = %s
+        """,
+        (execution_date,),
+    )
+    row_count = cur.fetchone()[0]
+
+    if row_count == 0:
+        raise ValueError("❌ Gold sanity check failed: no rows for execution date")
+
+    logging.info(f"Gold sanity: row_count={row_count}")
+
+    # 2️⃣ NULL coin_id check
+    cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM gold_coin_daily_metrics
+        WHERE dt = %s
+          AND coin_id IS NULL
+        """,
+        (execution_date,),
+    )
+    null_coin_ids = cur.fetchone()[0]
+
+    if null_coin_ids > 0:
+        raise ValueError(
+            f"❌ Gold sanity check failed: {null_coin_ids} NULL coin_id values"
+        )
+
+    # 3️⃣ Metric validity checks
+    cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM gold_coin_daily_metrics
+        WHERE dt = %s
+          AND (
+                avg_price_usd <= 0
+             OR min_price_usd < 0
+             OR max_price_usd < min_price_usd
+             OR avg_market_cap < 0
+          )
+        """,
+        (execution_date,),
+    )
+    invalid_metrics = cur.fetchone()[0]
+
+    if invalid_metrics > 0:
+        raise ValueError(
+            f"❌ Gold sanity check failed: {invalid_metrics} rows with invalid metrics"
+        )
+
+    cur.close()
+    conn.close()
+
+    logging.info("✅ Gold sanity checks passed")
+
+validate_gold_sanity_task = PythonOperator(
+    task_id="validate_gold_sanity",
+    python_callable=validate_gold_sanity,
+    provide_context=True,
+    dag=dag,
+)
    
 
 # -----------------------------
 # DAG Dependencies
 # -----------------------------
 
-create_tables_task >> extract_task >> upload_raw_to_s3_task >> transform_bronze_to_silver_task  >> validate_task >> load_dim_task >> load_fact_task >> build_gold_minio_task >> load_gold_postgres_task >> validate_gold_row_count_task >> validate_gold_task
+create_tables_task >> extract_task >> upload_raw_to_s3_task >> transform_bronze_to_silver_task  >> validate_task >> load_dim_task >> load_fact_task >> build_gold_minio_task >> load_gold_postgres_task >> validate_gold_row_count_task >> validate_gold_sanity_task >> validate_gold_task
 # >> load_gold_task
 
 
