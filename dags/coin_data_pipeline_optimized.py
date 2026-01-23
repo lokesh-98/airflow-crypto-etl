@@ -1157,16 +1157,55 @@ validate_gold_freshness_task = PythonOperator(
     dag=dag,
 )
 
+# def validate_gold_sla(**context):
+#     import logging
+#     from datetime import datetime, time, timezone
+
+#     logging.info("Validating GOLD SLA (lateness check)")
+
+#     execution_date_str = context["ds"]  # YYYY-MM-DD
+#     execution_date = datetime.fromisoformat(execution_date_str).date()
+
+#     # SLA definition: Gold must be ready by 09:00 UTC
+#     sla_deadline = datetime.combine(
+#         execution_date,
+#         time(hour=9, minute=0),
+#         tzinfo=timezone.utc,
+#     )
+
+#     now_utc = datetime.now(timezone.utc)
+
+#     logging.info(f"SLA deadline: {sla_deadline.isoformat()}")
+#     logging.info(f"Current time: {now_utc.isoformat()}")
+
+#     if now_utc > sla_deadline:
+#         raise ValueError(
+#             f"❌ GOLD SLA missed: "
+#             f"completed at {now_utc.isoformat()}, "
+#             f"expected by {sla_deadline.isoformat()}"
+#         )
+
+#     logging.info("✅ GOLD SLA met")
+
 def validate_gold_sla(**context):
     import logging
     from datetime import datetime, time, timezone
+    from airflow.utils.types import DagRunType
 
     logging.info("Validating GOLD SLA (lateness check)")
 
-    execution_date_str = context["ds"]  # YYYY-MM-DD
+    dag_run = context["dag_run"]
+
+    # ✅ Only enforce SLA for scheduled runs
+    if dag_run.run_type != DagRunType.SCHEDULED:
+        logging.info(
+            f"Skipping SLA check for run_type={dag_run.run_type}"
+        )
+        return
+
+    execution_date_str = context["ds"]
     execution_date = datetime.fromisoformat(execution_date_str).date()
 
-    # SLA definition: Gold must be ready by 09:00 UTC
     sla_deadline = datetime.combine(
         execution_date,
         time(hour=9, minute=0),
@@ -1186,6 +1225,7 @@ def validate_gold_sla(**context):
         )
 
     logging.info("✅ GOLD SLA met")
+
 
 validate_gold_sla_task = PythonOperator(
     task_id="validate_gold_sla",
