@@ -1,31 +1,21 @@
-from airflow import DAG
-from airflow.utils.dates import days_ago
-from airflow.operators.python import PythonOperator
-
-import pandas as pd
-import requests
-import psycopg2
-import logging
-
-import great_expectations as gx
-from airflow.hooks.base import BaseHook
-from psycopg2.extras import execute_batch
-from psycopg2.extras import execute_values
-
-from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 import io
-import pyarrow as pa
-import pyarrow.parquet as pq
-from datetime import datetime
-
-# minio - connection  
-from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from io import BytesIO
 import json
-from datetime import datetime
-import io
+import logging
+from datetime import datetime, timezone
 
+import pandas as pd
 import pyarrow as pa
+import pyarrow.parquet as pq
+import psycopg2
+import requests
+from airflow import DAG
+from airflow.hooks.base import BaseHook
+from airflow.operators.python import PythonOperator
+from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+from airflow.utils.dates import days_ago
+from psycopg2.extras import execute_batch, execute_values
+
 
 SILVER_SCHEMA_V1 = pa.schema([
     pa.field("coin_id", pa.string(), nullable=False),
@@ -456,6 +446,8 @@ def transform_bronze_to_silver(**context):
     logging.info(f"Silver partition committed: {final_silver_key}")
     
     # 5️⃣ Write Silver metadata (schema versioning)
+    SILVER_SCHEMA_VERSION = "v1"
+
     metadata = {
         "dataset": "coins",
         "schema_version": SILVER_SCHEMA_VERSION,
@@ -498,7 +490,11 @@ def validate_data():
 
     logging.info("Starting FAST in-memory validation")
 
-    # Load data
+    # NOTE:
+    # This validation currently reads from a legacy local CSV.
+    # Silver validation is now enforced via PyArrow schema + atomic writes.
+    # This task will be refactored or removed in Step C (Observability & Reliability).
+
     df = pd.read_csv("/opt/airflow/datasets/coin_transformed.csv")
 
     # Create ephemeral GE context (no filesystem, no gx folder)
@@ -724,20 +720,68 @@ load_fact_task = PythonOperator(
 
 ## =================================
 
-def build_gold_coin_daily_minio(**context):
-    logging.info("Building GOLD layer (MinIO)")
+# def build_gold_coin_daily_minio(**context):
+#     logging.info("Building GOLD layer (MinIO)")
 
-    execution_date = context["ds"]  # YYYY-MM-DD
+#     execution_date = context["ds"]  # YYYY-MM-DD
+#     silver_key = f"silver/coins/dt={execution_date}/coin_clean.parquet"
+#     gold_key = f"gold/coins_daily/dt={execution_date}/coin_daily_metrics.parquet"
+
+#     s3 = S3Hook(aws_conn_id="minio_s3")
+
+#     # Read Silver parquet
+#     silver_obj = s3.get_key(silver_key, bucket_name="crypto-lake")
+#     df = pd.read_parquet(BytesIO(silver_obj.get()["Body"].read()))
+
+#     # Aggregate
+#     gold_df = (
+#         df.groupby("coin_id")
+#         .agg(
+#             avg_price_usd=("price_usd", "mean"),
+#             min_price_usd=("price_usd", "min"),
+#             max_price_usd=("price_usd", "max"),
+#             avg_market_cap=("market_cap", "mean"),
+#         )
+#         .reset_index()
+#     )
+
+#     gold_df["dt"] = execution_date
+
+#     # Write Parquet back to MinIO
+#     buffer = BytesIO()
+#     gold_df.to_parquet(buffer, index=False)
+#     buffer.seek(0)
+
+#     s3.load_file_obj(
+#         buffer,
+#         key=gold_key,
+#         bucket_name="crypto-lake",
+#         replace=True,
+#     )
+
+#     logging.info("Gold layer written to MinIO successfully")
+
+def build_gold_coin_daily_minio(**context):
+    import logging
+    from io import BytesIO
+    import pandas as pd
+    from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+
+    logging.info("Building GOLD layer (coin daily metrics)")
+
+    execution_date = context["ds"]
+    bucket = "crypto-lake"
+
     silver_key = f"silver/coins/dt={execution_date}/coin_clean.parquet"
     gold_key = f"gold/coins_daily/dt={execution_date}/coin_daily_metrics.parquet"
 
     s3 = S3Hook(aws_conn_id="minio_s3")
 
-    # Read Silver parquet
-    silver_obj = s3.get_key(silver_key, bucket_name="crypto-lake")
+    # 1️⃣ Read Silver Parquet
+    silver_obj = s3.get_key(silver_key, bucket_name=bucket)
     df = pd.read_parquet(BytesIO(silver_obj.get()["Body"].read()))
 
-    # Aggregate
+    # 2️⃣ Aggregate (Gold logic)
     gold_df = (
         df.groupby("coin_id")
         .agg(
@@ -749,9 +793,10 @@ def build_gold_coin_daily_minio(**context):
         .reset_index()
     )
 
+    # 3️⃣ Add business date
     gold_df["dt"] = execution_date
 
-    # Write Parquet back to MinIO
+    # 4️⃣ Write Gold Parquet (idempotent overwrite)
     buffer = BytesIO()
     gold_df.to_parquet(buffer, index=False)
     buffer.seek(0)
@@ -759,11 +804,12 @@ def build_gold_coin_daily_minio(**context):
     s3.load_file_obj(
         buffer,
         key=gold_key,
-        bucket_name="crypto-lake",
+        bucket_name=bucket,
         replace=True,
     )
 
-    logging.info("Gold layer written to MinIO successfully")
+    logging.info(f"GOLD dataset written to s3://{bucket}/{gold_key}")
+
 
 build_gold_minio_task = PythonOperator(
     task_id="build_gold_minio",
@@ -779,21 +825,75 @@ build_gold_minio_task = PythonOperator(
 ## =================================
 
 
+# def load_gold_to_postgres(**context):
+#     logging.info("Loading GOLD layer into Postgres")
+
+#     execution_date = context["ds"]
+#     gold_key = f"gold/coins_daily/dt={execution_date}/coin_daily_metrics.parquet"
+
+#     s3 = S3Hook(aws_conn_id="minio_s3")
+
+#     # Read gold parquet from MinIO
+#     obj = s3.get_key(gold_key, bucket_name="crypto-lake")
+#     df = pd.read_parquet(BytesIO(obj.get()["Body"].read()))
+
+#     conn = get_pg_conn()
+#     cur = conn.cursor()
+
+#     records = [
+#         (
+#             execution_date,
+#             r.coin_id,
+#             r.avg_price_usd,
+#             r.min_price_usd,
+#             r.max_price_usd,
+#             r.avg_market_cap,
+#         )
+#         for r in df.itertuples(index=False)
+#     ]
+
+#     sql = """
+#         INSERT INTO gold_coin_daily_metrics
+#         (dt, coin_id, avg_price_usd, min_price_usd, max_price_usd, avg_market_cap)
+#         VALUES %s
+#         ON CONFLICT (dt, coin_id)
+#         DO UPDATE SET
+#             avg_price_usd = EXCLUDED.avg_price_usd,
+#             min_price_usd = EXCLUDED.min_price_usd,
+#             max_price_usd = EXCLUDED.max_price_usd,
+#             avg_market_cap = EXCLUDED.avg_market_cap;
+#     """
+
+#     execute_values(cur, sql, records, page_size=1000)
+
+#     conn.commit()
+#     cur.close()
+#     conn.close()
+
+#     logging.info("Gold layer loaded into Postgres successfully")
 def load_gold_to_postgres(**context):
-    logging.info("Loading GOLD layer into Postgres")
+    import logging
+    from io import BytesIO
+    import pandas as pd
+    from psycopg2.extras import execute_values
+    from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+
+    logging.info("Loading GOLD dataset into Postgres")
 
     execution_date = context["ds"]
+    bucket = "crypto-lake"
+
     gold_key = f"gold/coins_daily/dt={execution_date}/coin_daily_metrics.parquet"
 
+    # 1️⃣ Read Gold Parquet from MinIO
     s3 = S3Hook(aws_conn_id="minio_s3")
-
-    # Read gold parquet from MinIO
-    obj = s3.get_key(gold_key, bucket_name="crypto-lake")
+    obj = s3.get_key(gold_key, bucket_name=bucket)
     df = pd.read_parquet(BytesIO(obj.get()["Body"].read()))
 
-    conn = get_pg_conn()
-    cur = conn.cursor()
+    if df.empty:
+        raise ValueError("❌ Gold dataset is empty — aborting Postgres load")
 
+    # 2️⃣ Prepare records
     records = [
         (
             execution_date,
@@ -806,16 +906,20 @@ def load_gold_to_postgres(**context):
         for r in df.itertuples(index=False)
     ]
 
+    # 3️⃣ Insert / upsert into Postgres
+    conn = get_pg_conn()
+    cur = conn.cursor()
+
     sql = """
         INSERT INTO gold_coin_daily_metrics
         (dt, coin_id, avg_price_usd, min_price_usd, max_price_usd, avg_market_cap)
         VALUES %s
         ON CONFLICT (dt, coin_id)
         DO UPDATE SET
-            avg_price_usd = EXCLUDED.avg_price_usd,
-            min_price_usd = EXCLUDED.min_price_usd,
-            max_price_usd = EXCLUDED.max_price_usd,
-            avg_market_cap = EXCLUDED.avg_market_cap;
+            avg_price_usd   = EXCLUDED.avg_price_usd,
+            min_price_usd   = EXCLUDED.min_price_usd,
+            max_price_usd   = EXCLUDED.max_price_usd,
+            avg_market_cap  = EXCLUDED.avg_market_cap;
     """
 
     execute_values(cur, sql, records, page_size=1000)
@@ -824,7 +928,8 @@ def load_gold_to_postgres(**context):
     cur.close()
     conn.close()
 
-    logging.info("Gold layer loaded into Postgres successfully")
+    logging.info("GOLD dataset successfully loaded into Postgres")
+  
     
 load_gold_postgres_task = PythonOperator(
     task_id="load_gold_postgres",
@@ -878,13 +983,72 @@ validate_gold_task = PythonOperator(
     python_callable=validate_gold_metrics,
     dag=dag,
 )
+def validate_gold_row_count(**context):
+    import logging
+    from io import BytesIO
+    import pandas as pd
+    from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+
+    logging.info("Validating GOLD row count consistency")
+
+    execution_date = context["ds"]
+    bucket = "crypto-lake"
+
+    gold_key = f"gold/coins_daily/dt={execution_date}/coin_daily_metrics.parquet"
+
+    # 1️⃣ Count rows in MinIO Gold
+    s3 = S3Hook(aws_conn_id="minio_s3")
+    obj = s3.get_key(gold_key, bucket_name=bucket)
+    gold_df = pd.read_parquet(BytesIO(obj.get()["Body"].read()))
+    minio_count = len(gold_df)
+
+    logging.info(f"MinIO Gold row count: {minio_count}")
+
+    if minio_count == 0:
+        raise ValueError("❌ MinIO Gold dataset is empty")
+
+    # 2️⃣ Count rows in Postgres Gold
+    conn = get_pg_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM gold_coin_daily_metrics
+        WHERE dt = %s
+        """,
+        (execution_date,),
+    )
+
+    postgres_count = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+
+    logging.info(f"Postgres Gold row count: {postgres_count}")
+
+    # 3️⃣ Compare
+    if minio_count != postgres_count:
+        raise ValueError(
+            f"❌ Gold row count mismatch: "
+            f"MinIO={minio_count}, Postgres={postgres_count}"
+        )
+
+    logging.info("✅ Gold row count validation passed")
+
+validate_gold_row_count_task = PythonOperator(
+    task_id="validate_gold_row_count",
+    python_callable=validate_gold_row_count,
+    provide_context=True,
+    dag=dag,
+)
+    
    
 
 # -----------------------------
 # DAG Dependencies
 # -----------------------------
 
-create_tables_task >> extract_task >> upload_raw_to_s3_task >> transform_bronze_to_silver_task  >> validate_task >> load_dim_task >> load_fact_task >> build_gold_minio_task >> load_gold_postgres_task >> validate_gold_task
+create_tables_task >> extract_task >> upload_raw_to_s3_task >> transform_bronze_to_silver_task  >> validate_task >> load_dim_task >> load_fact_task >> build_gold_minio_task >> load_gold_postgres_task >> validate_gold_row_count_task >> validate_gold_task
 # >> load_gold_task
 
 
